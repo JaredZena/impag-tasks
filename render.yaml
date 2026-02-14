@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: impag-tasks
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: ALLOWED_EMAILS
+        sync: false
+    healthCheckPath: /health
