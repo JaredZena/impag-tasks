@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, date
 from auth import require_auth
 from models import get_db, Task, TaskUser, TaskCategory, TaskComment, get_current_task_user, get_next_task_number
 from services.archive_service import auto_archive_completed_tasks
+from services.import_service import parse_import_text, detect_duplicates_with_ai, create_imported_tasks
 
 tasks_bp = Blueprint("tasks", __name__)
 
@@ -78,6 +79,80 @@ def list_archive():
         ).order_by(Task.archived_at.desc()).all()
 
         return jsonify({"success": True, "data": [serialize_task(t) for t in tasks], "error": None, "message": None})
+    finally:
+        db.close()
+
+
+@tasks_bp.route("/import", methods=["POST"])
+@require_auth
+def import_tasks():
+    db = next(get_db())
+    try:
+        current_user = get_current_task_user(db)
+        if not current_user:
+            return jsonify({"success": False, "data": None, "error": "User not found in task system", "message": None}), 404
+
+        body = request.get_json()
+        text = body.get("text", "").strip() if body else ""
+        if not text:
+            return jsonify({"success": False, "data": None, "error": "No text provided", "message": None}), 400
+
+        # Default assignee: Hernan (id=1) or override from body
+        assigned_to = body.get("assigned_to", 1)
+
+        # Step 1: Parse incoming text
+        parsed = parse_import_text(text)
+        if not parsed:
+            return jsonify({"success": False, "data": None, "error": "No tasks could be parsed from the text", "message": None}), 400
+
+        # Step 2: Fetch existing active tasks for duplicate comparison
+        existing_tasks = db.query(Task).filter(Task.status != "archived").all()
+        existing_for_ai = [
+            {"id": t.id, "task_number": t.task_number, "title": t.title}
+            for t in existing_tasks
+        ]
+
+        # Step 3: AI duplicate detection
+        analyzed = detect_duplicates_with_ai(parsed, existing_for_ai)
+
+        # Step 4: Separate new vs duplicates
+        to_create = [t for t in analyzed if not t["is_duplicate"]]
+        duplicates = [t for t in analyzed if t["is_duplicate"]]
+
+        # Step 5: Create non-duplicate tasks
+        created_tasks = create_imported_tasks(db, to_create, assigned_to=assigned_to, created_by=current_user.id)
+        db.commit()
+
+        # Reload with relationships for response
+        created_ids = [t.id for t in created_tasks]
+        if created_ids:
+            created_tasks = db.query(Task).options(
+                joinedload(Task.creator),
+                joinedload(Task.assignee),
+                joinedload(Task.category),
+                joinedload(Task.comments),
+            ).filter(Task.id.in_(created_ids)).all()
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "created": [serialize_task(t) for t in created_tasks],
+                "duplicates": [
+                    {
+                        "title": d["title"],
+                        "task_number": d.get("task_number"),
+                        "matched_existing_id": d.get("matched_existing_id"),
+                        "reason": d.get("match_reason"),
+                    }
+                    for d in duplicates
+                ],
+                "total_parsed": len(parsed),
+                "total_created": len(created_tasks),
+                "total_duplicates": len(duplicates),
+            },
+            "error": None,
+            "message": f"{len(created_tasks)} tareas creadas, {len(duplicates)} duplicadas omitidas",
+        })
     finally:
         db.close()
 

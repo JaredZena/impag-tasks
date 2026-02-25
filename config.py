@@ -5,6 +5,7 @@ load_dotenv()
 
 database_url = os.getenv("DATABASE_URL")
 google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+claude_api_key = os.getenv("CLAUDE_API_KEY")
 allowed_emails = [
     e.strip().lower()
     for e in os.getenv("ALLOWED_EMAILS", "").split(",")
