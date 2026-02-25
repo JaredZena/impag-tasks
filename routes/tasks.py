@@ -3,7 +3,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import joinedload
 from datetime import datetime, timedelta, date
 from auth import require_auth
-from models import get_db, Task, TaskUser, TaskCategory, TaskComment, get_current_task_user
+from models import get_db, Task, TaskUser, TaskCategory, TaskComment, get_current_task_user, get_next_task_number
 from services.archive_service import auto_archive_completed_tasks
 
 tasks_bp = Blueprint("tasks", __name__)
@@ -39,6 +39,7 @@ def serialize_category(cat):
 def serialize_task(task):
     return {
         "id": task.id,
+        "task_number": task.task_number,
         "title": task.title,
         "description": task.description,
         "status": task.status,
@@ -222,6 +223,7 @@ def create_task():
             category_id=body.get("category_id"),
             assigned_to=body.get("assigned_to"),
             created_by=current_user.id,
+            task_number=get_next_task_number(db),
         )
         db.add(task)
         db.commit()
@@ -319,6 +321,10 @@ def update_task_status(id):
 
         if new_status == "archived":
             task.archived_at = datetime.utcnow()
+            task.task_number = None  # Release number for reuse
+        elif old_status == "archived" and new_status != "archived":
+            task.archived_at = None
+            task.task_number = get_next_task_number(db)  # Re-assign number
 
         task.last_updated = datetime.utcnow()
         db.commit()
@@ -348,6 +354,7 @@ def delete_task(id):
         # Soft delete: archive the task
         task.status = "archived"
         task.archived_at = datetime.utcnow()
+        task.task_number = None  # Release number for reuse
         task.last_updated = datetime.utcnow()
         db.commit()
 

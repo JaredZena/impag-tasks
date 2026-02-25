@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, DateTime, Boolean, Text, Date,
+    Column, Integer, SmallInteger, String, DateTime, Boolean, Text, Date,
     ForeignKey, create_engine
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -58,6 +58,7 @@ class Task(Base):
     category_id = Column(Integer, ForeignKey("task_category.id"), nullable=True, index=True)
     created_by = Column(Integer, ForeignKey("task_user.id"), nullable=False, index=True)
     assigned_to = Column(Integer, ForeignKey("task_user.id"), nullable=True, index=True)
+    task_number = Column(SmallInteger, nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     archived_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -125,3 +126,12 @@ def get_current_task_user(db):
         TaskUser.is_active == True
     ).first()
     return user
+
+
+def get_next_task_number(db):
+    """Find the lowest available task_number (1-based) not used by any active task."""
+    used = {r[0] for r in db.query(Task.task_number).filter(Task.task_number.isnot(None)).all()}
+    n = 1
+    while n in used:
+        n += 1
+    return n

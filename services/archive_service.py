@@ -18,6 +18,7 @@ def auto_archive_completed_tasks(db):
     for task in tasks_to_archive:
         task.status = "archived"
         task.archived_at = datetime.utcnow()
+        task.task_number = None  # Release number for reuse
 
     if tasks_to_archive:
         db.commit()
