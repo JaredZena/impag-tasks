@@ -85,6 +85,19 @@ class TaskComment(Base):
     user = relationship("TaskUser", back_populates="comments")
 
 
+class ClassifyLog(Base):
+    __tablename__ = "classify_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    triggered_by = Column(String(20), nullable=False)   # 'scheduler' or 'user'
+    tasks_examined = Column(Integer, default=0, nullable=False)
+    tasks_classified = Column(Integer, default=0, nullable=False)
+    tasks_no_match = Column(Integer, default=0, nullable=False)
+    status = Column(String(10), nullable=False)          # 'success' or 'error'
+    error_message = Column(Text, nullable=True)
+    ran_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 # --- Database connection (same Neon pattern as impag-quot) ---
 
 parsed_url = urlparse(database_url)

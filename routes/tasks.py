@@ -3,9 +3,10 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import joinedload
 from datetime import datetime, timedelta, date
 from auth import require_auth
-from models import get_db, Task, TaskUser, TaskCategory, TaskComment, get_current_task_user, get_next_task_number
+from models import get_db, Task, TaskUser, TaskCategory, TaskComment, ClassifyLog, get_current_task_user, get_next_task_number
 from services.archive_service import auto_archive_completed_tasks
 from services.import_service import parse_import_text, detect_duplicates_with_ai, create_imported_tasks
+from services.classify_service import classify_tasks_with_ai
 
 tasks_bp = Blueprint("tasks", __name__)
 
@@ -60,7 +61,98 @@ def serialize_task(task):
     }
 
 
-# NOTE: /archive must be registered BEFORE /<int:id> to avoid route conflicts
+# NOTE: /archive and /auto-classify must be registered BEFORE /<int:id> to avoid route conflicts
+CLASSIFY_COOLDOWN_MINUTES = 60
+
+
+@tasks_bp.route("/auto-classify", methods=["POST"])
+@require_auth
+def auto_classify():
+    db = next(get_db())
+    try:
+        body = request.get_json() or {}
+        reclassify_all = bool(body.get("reclassify_all", False))
+
+        # Guard: skip if a run happened in the last CLASSIFY_COOLDOWN_MINUTES
+        cooldown_cutoff = datetime.utcnow() - timedelta(minutes=CLASSIFY_COOLDOWN_MINUTES)
+        recent = db.query(ClassifyLog).filter(
+            ClassifyLog.ran_at >= cooldown_cutoff
+        ).order_by(ClassifyLog.ran_at.desc()).first()
+        if recent:
+            mins_ago = int((datetime.utcnow() - recent.ran_at.replace(tzinfo=None)).total_seconds() / 60)
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": f"Clasificación ejecutada hace {mins_ago} min. Espera al menos {CLASSIFY_COOLDOWN_MINUTES} min entre ejecuciones.",
+                "message": None,
+            }), 429
+
+        # Fetch categories
+        categories = db.query(TaskCategory).order_by(TaskCategory.sort_order).all()
+        if not categories:
+            return jsonify({"success": False, "data": None, "error": "No hay categorías configuradas", "message": None}), 400
+
+        # Fetch tasks to classify
+        query = db.query(Task).filter(Task.status != "archived")
+        if not reclassify_all:
+            query = query.filter(Task.category_id.is_(None))
+        tasks_to_classify = query.all()
+
+        if not tasks_to_classify:
+            log = ClassifyLog(triggered_by="user", tasks_examined=0, tasks_classified=0, tasks_no_match=0, status="success")
+            db.add(log)
+            db.commit()
+            return jsonify({
+                "success": True,
+                "data": {"classified": 0, "skipped": 0, "no_match": 0},
+                "error": None,
+                "message": "No hay tareas sin categoría",
+            })
+
+        tasks_for_ai = [{"id": t.id, "title": t.title, "description": t.description} for t in tasks_to_classify]
+        categories_for_ai = [{"id": c.id, "name": c.name} for c in categories]
+
+        try:
+            assignments = classify_tasks_with_ai(tasks_for_ai, categories_for_ai)
+        except Exception as e:
+            log = ClassifyLog(triggered_by="user", tasks_examined=len(tasks_to_classify), tasks_classified=0, tasks_no_match=0, status="error", error_message=str(e))
+            db.add(log)
+            db.commit()
+            raise
+
+        classified = 0
+        no_match = 0
+        for task in tasks_to_classify:
+            cat_id = assignments.get(task.id)
+            if cat_id is not None:
+                task.category_id = cat_id
+                task.last_updated = datetime.utcnow()
+                classified += 1
+            else:
+                no_match += 1
+
+        log = ClassifyLog(
+            triggered_by="user",
+            tasks_examined=len(tasks_to_classify),
+            tasks_classified=classified,
+            tasks_no_match=no_match,
+            status="success",
+        )
+        db.add(log)
+        db.commit()
+
+        skipped = len(tasks_to_classify) - classified - no_match
+
+        return jsonify({
+            "success": True,
+            "data": {"classified": classified, "skipped": skipped, "no_match": no_match},
+            "error": None,
+            "message": f"{classified} tareas clasificadas",
+        })
+    finally:
+        db.close()
+
+
 @tasks_bp.route("/archive", methods=["GET"])
 @require_auth
 def list_archive():
